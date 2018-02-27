@@ -1,0 +1,13 @@
+configobj==5.0.6
+docopt==0.6.2
+matplotlib
+mock==2.0.0
+nose
+numpy
+pandas
+pandas-timeseries
+scipy
+seaborn
+sortedcontainers==1.5.7
+statsmodels
+toposort==1.5
