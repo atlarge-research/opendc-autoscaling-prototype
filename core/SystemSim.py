@@ -76,6 +76,7 @@ config_schema = '''
     [experiment]
     ID                           = string(default='')
     ITERATION                    = string(default='')
+    WORKLOAD_FORMAT              = string(default='gwf')
 
     [simulation]
     N_TICKS                      = integer(min=1)
@@ -89,6 +90,7 @@ config_schema = '''
     ClusterSetup                 = string(default='clustersetup.csv')
     Autoscaler                   = string(default='')
     Scheduler                    = string(default='fillworstfit')
+    LoggingEnabled               = boolean(default=True)
 
     [central_queue]
     N_TICKS_MONITOR_SITE_STATUS  = integer(default=5)
@@ -231,21 +233,26 @@ class SystemSim(SimCore.CSimulation):
             gwf_filenames = [simulation_config.get('GWF')]
 
         gwf_paths = []
-        for gwf in gwf_filenames:
-            gwf_path = SimUtils.prepend_gwf_path(gwf)
+        if self.config['experiment']['WORKLOAD_FORMAT'] == 'gwf':
+            for gwf in gwf_filenames:
+                gwf_path = SimUtils.prepend_gwf_path(gwf)
 
-            # if gwf_path stands for a dir, make sure to add only the
-            # files inside that dir
-            if os.path.isdir(gwf_path):
-                gwf_paths.extend(
-                    [os.path.join(gwf_path, file)
-                     for file in os.listdir(gwf_path)
-                     if os.path.isfile(os.path.join(gwf_path, file))]
-                )
-            else:
-                gwf_paths.append(gwf_path)
+                # if gwf_path stands for a dir, make sure to add only the
+                # files inside that dir
+                if os.path.isdir(gwf_path):
+                    gwf_paths.extend(
+                        [os.path.join(gwf_path, file)
+                         for file in os.listdir(gwf_path)
+                         if os.path.isfile(os.path.join(gwf_path, file))]
+                    )
+                else:
+                    gwf_paths.append(gwf_path)
 
-        workflows, tasks = SimUtils.read_tasks(cluster_setup, gwf_paths)
+        if self.config['experiment']['WORKLOAD_FORMAT'] == 'wtf':
+            workflows, tasks = SimUtils.read_tasks_from_wtf(gwf_filenames[0])
+        else:
+            workflows, tasks = SimUtils.read_tasks(cluster_setup, gwf_paths)
+
         self.log_tasks_in(workflows, tasks)
 
         self.central_queue.set_task_list(tasks, first_submission_at_zero=False)
@@ -283,10 +290,11 @@ class SystemSim(SimCore.CSimulation):
         for event_type in self.system_monitor.events_map:
             event_types.append(event_type)
 
-        self.logger.log_and_db('Sys: Tasks In      ={0}'.format(self.system_monitor.sstats_Total_NTasksIn))
-        self.logger.log_and_db('Sys: Tasks Started ={0}'.format(self.system_monitor.sstats_Total_NTasksStarted))
-        self.logger.log_and_db('Sys: Tasks Finished={0}'.format(self.system_monitor.sstats_Total_NTasksFinished))
-        self.logger.log_and_db('Sys: Tasks To Come ={0}'.format(self.system_monitor.getNTasksToCome()))
+        if self.config['simulation']['LoggingEnabled']:
+            self.logger.log_and_db('Sys: Tasks In      ={0}'.format(self.system_monitor.sstats_Total_NTasksIn))
+            self.logger.log_and_db('Sys: Tasks Started ={0}'.format(self.system_monitor.sstats_Total_NTasksStarted))
+            self.logger.log_and_db('Sys: Tasks Finished={0}'.format(self.system_monitor.sstats_Total_NTasksFinished))
+            self.logger.log_and_db('Sys: Tasks To Come ={0}'.format(self.system_monitor.getNTasksToCome()))
 
         def gen_task_scheduler_event():
             return SimCore.Event(
@@ -305,7 +313,8 @@ class SystemSim(SimCore.CSimulation):
 
             self.ts_now = event.ts_arrival
 
-            self.logger.log('Processing event {0}'.format(event), 'debug')
+            if self.config['simulation']['LoggingEnabled']:
+                self.logger.log('Processing event {0}'.format(event), 'debug')
 
             # statistics
             if 'type' in event.params:
@@ -342,64 +351,67 @@ class SystemSim(SimCore.CSimulation):
                         NoEvents += self.crt_cycle_messages_count[event_type]
                     for event_type in event_types:
                         if event_type in self.crt_cycle_messages_count:
-                            self.DBStats.addNoMessages(self.ts_now, event_type,
-                                                       self.crt_cycle_messages_count[event_type])
+                            if self.config['simulation']['LoggingEnabled']:
+                                self.DBStats.addNoMessages(self.ts_now, event_type,
+                                                           self.crt_cycle_messages_count[event_type])
                         else:
-                            self.DBStats.addNoMessages(self.ts_now, event_type, 0)
+                            if self.config['simulation']['LoggingEnabled']:
+                                self.DBStats.addNoMessages(self.ts_now, event_type, 0)
                     # if cycle_index % 100 == 0: fout.flush()
 
                     # reset current cycle's message count
                     self.crt_cycle_messages_count = {}
 
                     if cycle_index % 10000 == 0:
-                        dtTSEndTime = datetime.datetime.now()
-                        self.logger.log('======')
-                        self.logger.log('CYCLE {0} (TS={1}) StartTime= {2}'.format(
-                            cycle_index,
-                            last_ts_now,
-                            dtTSStartTime.strftime(SimUtils.DATE_FORMAT)
-                        ))
-
-                        self.logger.log('CYCLE {0} (TS={1}) EndTime  = {2}'.format(
-                            cycle_index,
-                            last_ts_now,
-                            dtTSEndTime.strftime(SimUtils.DATE_FORMAT)
-                        ))
-
-                        self.logger.log('CYCLE {0} (TS={1}) RunTime  = {2}'.format(
-                            cycle_index,
-                            last_ts_now,
-                            dtTSEndTime - dtTSStartTime
-                        ))
-
-                        cycle = time.mktime(dtTSEndTime.timetuple()) - time.mktime(dtTSStartTime.timetuple())
-                        cycle_duration.addValue(cycle)
-                        dtMainEndTime = datetime.datetime.now()
-
-                        self.logger.log(
-                            'CYCLE {0} (TS={1}) Last={2}\n\tStats for 10k cycles: Avg={3}s Min={4}s Max={5}s'.format(
+                        if self.config['simulation']['LoggingEnabled']:
+                            self.logger.log('======')
+                            dtTSEndTime = datetime.datetime.now()
+                            self.logger.log('CYCLE {0} (TS={1}) StartTime= {2}'.format(
                                 cycle_index,
                                 last_ts_now,
-                                dtTSEndTime - dtTSStartTime,
-                                cycle_duration.Avg,
-                                cycle_duration.Min,
-                                cycle_duration.Max
+                                dtTSStartTime.strftime(SimUtils.DATE_FORMAT)
+                            ))
+
+                            self.logger.log('CYCLE {0} (TS={1}) EndTime  = {2}'.format(
+                                cycle_index,
+                                last_ts_now,
+                                dtTSEndTime.strftime(SimUtils.DATE_FORMAT)
+                            ))
+
+                            self.logger.log('CYCLE {0} (TS={1}) RunTime  = {2}'.format(
+                                cycle_index,
+                                last_ts_now,
+                                dtTSEndTime - dtTSStartTime
+                            ))
+
+                            cycle = time.mktime(dtTSEndTime.timetuple()) - time.mktime(dtTSStartTime.timetuple())
+                            cycle_duration.addValue(cycle)
+                            dtMainEndTime = datetime.datetime.now()
+
+                            self.logger.log(
+                                'CYCLE {0} (TS={1}) Last={2}\n\tStats for 10k cycles: Avg={3}s Min={4}s Max={5}s'.format(
+                                    cycle_index,
+                                    last_ts_now,
+                                    dtTSEndTime - dtTSStartTime,
+                                    cycle_duration.Avg,
+                                    cycle_duration.Min,
+                                    cycle_duration.Max
+                                )
                             )
-                        )
-                        self.logger.log('CYCLES TotalRunTime  = {0}'.format(dtMainEndTime - dtMainStartTime))
+                            self.logger.log('CYCLES TotalRunTime  = {0}'.format(dtMainEndTime - dtMainStartTime))
 
-                        self.logger.log_and_db('Sys: Tasks In      ={0}'.format(self.system_monitor.sstats_Total_NTasksIn))
-                        self.logger.log_and_db(
-                            'Sys: Tasks Started ={0}'.format(self.system_monitor.sstats_Total_NTasksStarted))
-                        self.logger.log_and_db(
-                            'Sys: Tasks Finished={0}'.format(self.system_monitor.sstats_Total_NTasksFinished))
-                        self.logger.log_and_db('Sys: Tasks To Come ={0}'.format(self.system_monitor.getNTasksToCome()))
+                            self.logger.log_and_db('Sys: Tasks In      ={0}'.format(self.system_monitor.sstats_Total_NTasksIn))
+                            self.logger.log_and_db(
+                                'Sys: Tasks Started ={0}'.format(self.system_monitor.sstats_Total_NTasksStarted))
+                            self.logger.log_and_db(
+                                'Sys: Tasks Finished={0}'.format(self.system_monitor.sstats_Total_NTasksFinished))
+                            self.logger.log_and_db('Sys: Tasks To Come ={0}'.format(self.system_monitor.getNTasksToCome()))
 
-                        dtTSStartTime = dtTSEndTime
+                            dtTSStartTime = dtTSEndTime
 
             last_ts_now = self.ts_now
 
-            if self.ts_now > self.ts_end:
+            if self.ts_now > self.ts_end and self.config['simulation']['LoggingEnabled']:
                 self.logger.log_and_db(
                     'Got an event with ts_arrival={0} > ts_end={1} --> ending simulation'.format(self.ts_now,
                                                                                                  self.ts_end),
@@ -408,50 +420,56 @@ class SystemSim(SimCore.CSimulation):
 
             self.dispatch(event)
 
-        if self.forced_stop:
+        if self.forced_stop and self.config['simulation']['LoggingEnabled']:
             self.logger.log_and_db('Was forced to stop!', 'warning')
 
-        self.DBStats.flushall()
-        self.DBTasksDoneTrace.flush()
-        self.DBTasksInTrace.flush()
+        if self.config['simulation']['LoggingEnabled']:
+            self.DBStats.flushall()
+            self.DBTasksDoneTrace.flush()
+            self.DBTasksInTrace.flush()
 
         dtMainEndTime = datetime.datetime.now()
-        self.logger.log('======')
-        self.logger.log('run StartTime = {0}'.format(dtMainStartTime.strftime(SimUtils.DATE_FORMAT)))
-        self.logger.log('run EndTime   = {0}'.format(dtMainEndTime.strftime(SimUtils.DATE_FORMAT)))
-        self.logger.log('run RunTime   = {0}'.format(dtMainEndTime - dtMainStartTime))
+        if self.config['simulation']['LoggingEnabled']:
+            self.logger.log('======')
+            self.logger.log('run StartTime = {0}'.format(dtMainStartTime.strftime(SimUtils.DATE_FORMAT)))
+            self.logger.log('run EndTime   = {0}'.format(dtMainEndTime.strftime(SimUtils.DATE_FORMAT)))
+            self.logger.log('run RunTime   = {0}'.format(dtMainEndTime - dtMainStartTime))
 
         self.system_monitor.refresh_sstats({})
-        self.logger.log_and_db('Sys: Tasks In         ={0}'.format(self.system_monitor.sstats_Total_NTasksIn))
-        self.logger.log_and_db('Sys: Tasks Started    ={0}'.format(self.system_monitor.sstats_Total_NTasksStarted))
-        self.logger.log_and_db('Sys: Tasks Finished   ={0}'.format(self.system_monitor.sstats_Total_NTasksFinished))
-        self.logger.log_and_db('Sys: Tasks Interrupted={0}'.format(self.system_monitor.sstats_Total_NTasksInterrupted))
-        self.logger.log_and_db('Sys: Tasks To Come    ={0}'.format(self.system_monitor.getNTasksToCome()))
-        self.logger.log('Sys: Tasks Too Large  ={0}'.format(self.system_monitor.count_tasks_too_large()))
+
+        if self.config['simulation']['LoggingEnabled']:
+            self.logger.log_and_db('Sys: Tasks In         ={0}'.format(self.system_monitor.sstats_Total_NTasksIn))
+            self.logger.log_and_db('Sys: Tasks Started    ={0}'.format(self.system_monitor.sstats_Total_NTasksStarted))
+            self.logger.log_and_db('Sys: Tasks Finished   ={0}'.format(self.system_monitor.sstats_Total_NTasksFinished))
+            self.logger.log_and_db('Sys: Tasks Interrupted={0}'.format(self.system_monitor.sstats_Total_NTasksInterrupted))
+            self.logger.log_and_db('Sys: Tasks To Come    ={0}'.format(self.system_monitor.getNTasksToCome()))
+            self.logger.log('Sys: Tasks Too Large  ={0}'.format(self.system_monitor.count_tasks_too_large()))
 
     def report(self):
-        self.logger.db('Simulation report')
-        self.logger.db('=============================')
-        self.logger.db('Events:' + '%8d' % self.events.count_events_in + '|' + \
-                  '%8d' % self.events.count_events_peek + '|' + \
-                  '%8d' % self.events.count_events_out + '(In/P/Out)')
-        if self.events.count_events_in > 0:
-            self.logger.db('   [%]: ' + '%7s%%' % ('%.2f' % 100.0) + '|' + \
-                      '%7s%%' % ('%.2f' % (
-                          100.0 * self.events.count_events_peek / self.events.count_events_in)) + '|' + \
-                      '%7s%%' % ('%.2f' % (
-                          100.0 * self.events.count_events_out / self.events.count_events_in)) + '(In/P/Out)')
-        else:
-            self.logger.db(' [%]: ' + '%8s' % 'n/a' + '|' + \
-                      '%8s' % 'n/a' + '|' + \
-                      '%8s%%' % 'n/a' + '(In/P/Out)')
+        if self.config['simulation']['LoggingEnabled']:
+            self.logger.db('Simulation report')
+            self.logger.db('=============================')
+            self.logger.db('Events:' + '%8d' % self.events.count_events_in + '|' + \
+                      '%8d' % self.events.count_events_peek + '|' + \
+                      '%8d' % self.events.count_events_out + '(In/P/Out)')
+            if self.events.count_events_in > 0:
+                self.logger.db('   [%]: ' + '%7s%%' % ('%.2f' % 100.0) + '|' + \
+                          '%7s%%' % ('%.2f' % (
+                              100.0 * self.events.count_events_peek / self.events.count_events_in)) + '|' + \
+                          '%7s%%' % ('%.2f' % (
+                              100.0 * self.events.count_events_out / self.events.count_events_in)) + '(In/P/Out)')
+            else:
+                self.logger.db(' [%]: ' + '%8s' % 'n/a' + '|' + \
+                          '%8s' % 'n/a' + '|' + \
+                          '%8s%%' % 'n/a' + '(In/P/Out)')
 
         if self.events:
             next_event = self.events.peek()
-            self.logger.db('TS of next event in the queue: {0}'.format(next_event.ts_arrival))
+            if self.config['simulation']['LoggingEnabled']:
+                self.logger.db('TS of next event in the queue: {0}'.format(next_event.ts_arrival))
 
-            self.logger.db('Simulated System Stats')
-            self.logger.db('=============================')
+                self.logger.db('Simulated System Stats')
+                self.logger.db('=============================')
 
         RptStats = {
             'Site_Tasks_In': AIStatistics.CStats(bIsNumeric=True, bKeepValues=False, bAutoComputeStats=False),
@@ -467,27 +485,30 @@ class SystemSim(SimCore.CSimulation):
 
         for Site in self.sites:
             site_monitor = Site.site_monitor
-            self.logger.db('Site: {0}'.format(Site.name))
-            self.logger.db('Tasks: ' + '%8d' % site_monitor.stats_Total_NTasksIn + \
-                      '|' + '%8d' % site_monitor.stats_Total_NTasksStarted + '|' + '%8d' % site_monitor.stats_Total_NTasksFinished + '(In/S/F)')
-            self.logger.flush()
+            if self.config['simulation']['LoggingEnabled']:
+                self.logger.db('Site: {0}'.format(Site.name))
+                self.logger.db('Tasks: ' + '%8d' % site_monitor.stats_Total_NTasksIn + \
+                          '|' + '%8d' % site_monitor.stats_Total_NTasksStarted + '|' + '%8d' % site_monitor.stats_Total_NTasksFinished + '(In/S/F)')
+                self.logger.flush()
             RptStats['Site_Tasks_In'].addValue(site_monitor.stats_Total_NTasksIn)
             if site_monitor.stats_Total_NTasksIn > 0:
                 RptStats['Site_Tasks_StartedPer'].addValue(
                     100.0 * site_monitor.stats_Total_NTasksStarted / site_monitor.stats_Total_NTasksIn)
                 RptStats['Site_Tasks_FinishedPer'].addValue(
                     100.0 * site_monitor.stats_Total_NTasksFinished / site_monitor.stats_Total_NTasksIn)
-                self.logger.db(' [%]: ' + '%7s%%' % ('%.2f' % 100.0) + '|' + \
-                          '%7s%%' % ('%.2f' % (
-                              100.0 * site_monitor.stats_Total_NTasksStarted / site_monitor.stats_Total_NTasksIn)) + '|' + \
-                          '%7s%%' % ('%.2f' % (
-                              100.0 * site_monitor.stats_Total_NTasksFinished / site_monitor.stats_Total_NTasksIn)) + '(In/S/F)')
+                if self.config['simulation']['LoggingEnabled']:
+                    self.logger.db(' [%]: ' + '%7s%%' % ('%.2f' % 100.0) + '|' + \
+                              '%7s%%' % ('%.2f' % (
+                                  100.0 * site_monitor.stats_Total_NTasksStarted / site_monitor.stats_Total_NTasksIn)) + '|' + \
+                              '%7s%%' % ('%.2f' % (
+                                  100.0 * site_monitor.stats_Total_NTasksFinished / site_monitor.stats_Total_NTasksIn)) + '(In/S/F)')
             else:
                 # RptStats['Site_Tasks_StartedPer'].addValue( 0.0 )
                 # RptStats['Site_Tasks_FinishedPer'].addValue( 0.0 )
-                self.logger.db(' [%]: ' + '%8s' % 'n/a' + '|' + \
-                          '%8s' % 'n/a' + '|' + \
-                          '%8s%%' % 'n/a' + '(In/S/F)')
+                if self.config['simulation']['LoggingEnabled']:
+                    self.logger.db(' [%]: ' + '%8s' % 'n/a' + '|' + \
+                              '%8s' % 'n/a' + '|' + \
+                              '%8s%%' % 'n/a' + '(In/S/F)')
 
         RptStats['CentralQueue_Tasks_Submitted'].addValue(self.central_queue.submitted_tasks_count)
         RptStats['CentralQueue_Tasks_Finished'].addValue(self.central_queue.finished_tasks_count)
@@ -495,9 +516,10 @@ class SystemSim(SimCore.CSimulation):
             RptStats['CentralQueue_Tasks_FinishedPer'].addValue(
                 100.0 * self.central_queue.finished_tasks_count / self.central_queue.submitted_tasks_count)
 
-            self.logger.db('Complete Stats')
-            self.logger.db('=============================')
-            self.logger.db('%s\t%s\t%s\t%s\t%s\t%s\t%s' % ('Name', 'NItems', 'Avg', 'Min', 'Max', 'Sum', 'CoV'))
+            if self.config['simulation']['LoggingEnabled']:
+                self.logger.db('Complete Stats')
+                self.logger.db('=============================')
+                self.logger.db('%s\t%s\t%s\t%s\t%s\t%s\t%s' % ('Name', 'NItems', 'Avg', 'Min', 'Max', 'Sum', 'CoV'))
         for Stat in ['Site_Tasks_In',
                      'Site_Tasks_StartedPer',
                      'Site_Tasks_FinishedPer',
@@ -512,6 +534,7 @@ class SystemSim(SimCore.CSimulation):
 
         if self.autoscaler:
             self.autoscaler.report_stats(self.ts_now, self.resource_manager.get_maximum_capacity())
+
         self.central_queue.report_stats()
 
     def run(self):
@@ -523,10 +546,11 @@ class SystemSim(SimCore.CSimulation):
 
         dt_end = datetime.datetime.now()
 
-        self.logger.log('-------------')
-        self.logger.log('StartTime = {0}'.format(dt_start.strftime(SimUtils.DATE_FORMAT)))
-        self.logger.log('EndTime   = {0}'.format(dt_end.strftime(SimUtils.DATE_FORMAT)))
-        self.logger.log('RunTime   = {0}'.format(dt_end - dt_start))
+        if self.config['simulation']['LoggingEnabled']:
+            self.logger.log('-------------')
+            self.logger.log('StartTime = {0}'.format(dt_start.strftime(SimUtils.DATE_FORMAT)))
+            self.logger.log('EndTime   = {0}'.format(dt_end.strftime(SimUtils.DATE_FORMAT)))
+            self.logger.log('RunTime   = {0}'.format(dt_end - dt_start))
 
         self.logger.close()
         cleanup_logging(self.runtime_handler)  # ensure handlers don't persist between simulation runs

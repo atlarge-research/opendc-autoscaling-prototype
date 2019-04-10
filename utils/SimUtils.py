@@ -6,8 +6,8 @@ import json
 import logging
 import os
 import sys
-from collections import deque
 from operator import attrgetter
+import pandas as pd
 
 import toposort
 from configobj import ConfigObj, flatten_errors, get_extra_values
@@ -36,8 +36,8 @@ def save_config(config):
 
 def load_config(filename, config_schema):
     config = ConfigObj(
-        filename, 
-        file_error=True, 
+        filename,
+        file_error=True,
         configspec=config_schema
     )
 
@@ -198,6 +198,7 @@ def calculate_critical_path_length2(workflow):
 
     return (max_finish_time - min(id_submit_map.values()), task_count)
 
+
 def create_from_gwf(row, submission_site, workflow_id=None):
     return Task(
         row['task_id'],
@@ -207,6 +208,17 @@ def create_from_gwf(row, submission_site, workflow_id=None):
         row['cpus'],
         row['dependencies'],
         workflow_id=workflow_id
+    )
+
+def create_from_wtf_parquet(row):
+    return Task(
+        row["id"] if "id" in row else row["task_id"],
+        int(round(row["ts_submit"] / 1000)),  # DGSim works with seconds, not milliseconds
+        row["submission_site"],
+        int(round(row["runtime"] / 1000)),  # DGSim works with seconds, not milliseconds
+        row["resource_amount_requested"],
+        set(row["parents"]),
+        row["workflow_id"]
     )
 
 
@@ -275,6 +287,49 @@ def read_tasks(clusters, gwf_filenames):
 
     return workflows, tasks
 
+
+def read_tasks_from_wtf(path):
+    workflows = {}
+    tasks = []
+
+    tasks_read = 0
+    tasks_by_id = {}
+
+    print(path)
+    pdf = pd.read_parquet(path, engine="pyarrow")
+
+    for _, row in pdf.iterrows():
+        task = create_from_wtf_parquet(row)
+        tasks_by_id[task.id] = task
+        tasks.append(task)
+
+        workflow_id = task.workflow_id
+        if workflow_id not in workflows:
+            workflows[workflow_id] = Workflow(workflow_id, None, [])
+        workflows[workflow_id].tasks.append(task)
+
+    for task in tasks:
+        for dependency in task.dependencies:
+            other_task = tasks_by_id[dependency]
+            other_task.children.append(task)
+            task.parents.append(other_task)
+
+        tasks_read += 1
+
+    logger.info('Read {0} tasks'.format(tasks_read))
+    logger.info('{0} workflows have been found'.format(len(workflows)))
+
+
+
+    # fill in ts_submit and critical_path_length for all workflows
+    for workflow in workflows.values():
+        first_entry_task = min(workflow.tasks, key=attrgetter('ts_submit'))  # workflows can have multiple entry nodes
+        workflow.ts_submit = first_entry_task.ts_submit
+        workflow.critical_path_length, workflow.critical_path_task_count = calculate_critical_path_length2(workflow)
+
+    return workflows, tasks
+
+
 def rows_from_gwf(gwf_filename):
     with open(gwf_filename, 'r') as gwf_file:
         csv_reader = csv.DictReader(gwf_file)
@@ -293,7 +348,7 @@ def prepend_gwf_path(gwf_filename):
     return os.path.join(ProjectUtils.root_path, GWF_FOLDER, gwf_filename)
 
 def get_hour_and_day_for_ts(ts):
-    return int(ts / 3600), int(ts / (24 * 3600))
+    return int(ts / 3600) % 24, int(ts / (24 * 3600))
 
 def add_file_logging(name, filename, config):
     frame = inspect.stack()[1]

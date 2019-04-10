@@ -119,6 +119,7 @@ class DBLogger(object):
         DBLogger._instances = {}
 
     def flush(self):
+        if not self.config['simulation']['LoggingEnabled']: return
         if self.iLastIndex > 0:
             self.WriteCursor.executemany(
                 "insert into `Log` (`line_no`, `real_time`, `sim_time`, `message`) values (NULL, ?, ?, ?)", self.Buffer)
@@ -127,16 +128,19 @@ class DBLogger(object):
             self.iLastIndex = 0
 
     def db(self, message):
-        if self.config['simulation']['DBLoggingEnabled']:
-            real_time = datetime.datetime.now().strftime(SimUtils.DATE_FORMAT)
-            sim_time = self.sim.ts_now
+        if not self.config['simulation']['LoggingEnabled']: return
 
-            self.Buffer.append((real_time, sim_time, str(message)))
-            self.iLastIndex += 1
-            if self.iLastIndex == self.BufferSize:
-                self.flush()
+        real_time = datetime.datetime.now().strftime(SimUtils.DATE_FORMAT)
+        sim_time = self.sim.ts_now
+
+        self.Buffer.append((real_time, sim_time, str(message)))
+        self.iLastIndex += 1
+        if self.iLastIndex == self.BufferSize:
+            self.flush()
 
     def log(self, message, log_level='info'):
+        if not self.config['simulation']['LoggingEnabled']: return
+
         frame = inspect.currentframe().f_back
         if frame.f_code.co_name == 'log_and_db':
             frame = frame.f_back
@@ -160,6 +164,8 @@ class DBLogger(object):
             self._logger.log(log_level, message, extra=extra)
 
     def log_and_db(self, message, log_level='info'):
+        if not self.config['simulation']['LoggingEnabled']: return
+
         self.log(message, log_level)
         self.db(message)
 

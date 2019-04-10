@@ -187,14 +187,14 @@ class SystemMonitor(SimCore.SimEntity):
 
     def getNTasksToCome(self):
         """Tasks that have not yet been submitted for processing on a site."""
-        return len(self.sim.central_queue.task_queue) + len(self.sim.central_queue.ready_tasks)
+        return self.sim.central_queue.number_of_remaining_tasks
 
     def count_tasks_too_large(self):
         if not self.sim.sites:
             return 0
         largest_site = max(self.sim.sites, key=operator.attrgetter('resources'))
         max_resources = largest_site.resources
-        return sum(1 for task in self.sim.central_queue.task_queue if task.cpus > max_resources)
+        return self.sim.central_queue.count_tasks_above_resource_limit(max_resources)
 
     def count_idle_resources(self):
         return sum(site.free_resources for site in self.sim.sites if site.status == Constants.STATUS_RUNNING)
@@ -222,15 +222,7 @@ class SystemMonitor(SimCore.SimEntity):
         return total_load
 
     def get_pending_tasks_load(self):
-        load = sum(task.cpus for task in self.sim.central_queue.ready_tasks)
-
-        # Also count tasks that are in the queue with dependencies not resolved yet.
-        for task in self.sim.central_queue.task_queue:
-            if task.ts_submit > self.sim.ts_now:
-                break
-            load += task.cpus
-
-        return load
+        return self.sim.central_queue.compute_pending_task_load()
 
     def get_estimated_total_arrival_rate_for_ts(self, ts, percentile):
         estimated_arrival_rate = 0

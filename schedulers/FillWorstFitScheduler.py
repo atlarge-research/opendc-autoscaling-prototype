@@ -12,23 +12,19 @@ class FillWorstFitScheduler(Scheduler):
         #     if site.leased_instance and site.expired:
         #         self.sim.sites.remove(site)
 
-        self.logger.log('task_queue length is {0}'.format(len(self.central_queue.task_queue)), 'debug')
+        #self.logger.log('task_queue length is {0}'.format(len(self.central_queue.task_queue)), 'debug')
 
         self.try_schedule_tasks()
 
-        # if no more tasks to assign, no need to schedule a future event for this
-        if not self.central_queue.task_queue and not self.central_queue.ready_tasks:
+        # If no more tasks to assign, no need to schedule a future event for this component
+        if not self.central_queue.has_remaining_tasks:
             return
 
-        # if there are tasks due, the next event occurs after N_TICKS_BETWEEN_AUTO_RESCHEDULE
-        # otherwise, it occurs when the next first task is due
+        # Get the timestamp of the next task to be scheduled
+        next_task_ts = self.central_queue.ts_of_next_task
 
-        next_task_ts = self.central_queue.task_queue[0].ts_submit if self.central_queue.task_queue else None
-
-        if self.central_queue.ready_tasks:
-            # The ready task is always earlier than the ones in the task queue, no need to compare.
-            next_task_ts = self.central_queue.ready_tasks[0].ts_submit
-
+        # Compute the timestamp of the next scheduling event, at least
+        # N_TICKS_BETWEEN_AUTO_RESCHEDULE in the future
         if next_task_ts <= self.sim.ts_now + self.N_TICKS_BETWEEN_AUTO_RESCHEDULE:
             next_event_ts = self.sim.ts_now + self.N_TICKS_BETWEEN_AUTO_RESCHEDULE
         else:
@@ -47,12 +43,11 @@ class FillWorstFitScheduler(Scheduler):
         """Only assigns a task if resources for it are available."""
 
         tasks = self.central_queue.tasks_to_schedule()
-        if tasks:
-            # if there are tasks to schedule, sorts self.site_stats by free space
-            self.central_queue.sort_site_stats()
 
-        for index_site, (free_resources, site_name, site_id, is_leased_instance, expiration_ts) in enumerate(self.central_queue.site_stats):  # start from the freest site (worst fit)
-            self.logger.log('Site {0} has {1} free resources'.format(site_name, free_resources), 'debug')
+        # Iterate over sites from most to least free resources
+        for site_index, (free_resources, site_name, site_id, is_leased_instance, expiration_ts) in \
+            reversed(self.central_queue.site_stats_by_ascending_free_resources[:]):  # start from the freest site (worst fit)
+            #self.logger.log('Site {0} has {1} free resources'.format(site_name, free_resources), 'debug')
 
             if not free_resources or not tasks:
                 return
@@ -70,8 +65,9 @@ class FillWorstFitScheduler(Scheduler):
                         next_task = next(runnable_tasks, None)
                         continue
 
-                self.logger.log('Assigning task {0} to site {1}'.format(next_task.id, site_name), 'debug')
+                # Assign the task to this site
                 self.central_queue.submitted_tasks_count += 1
+                self.central_queue.ready_tasks.remove(next_task)
                 self.events.enqueue(
                     SimCore.Event(
                         self.sim.ts_now,
@@ -81,13 +77,12 @@ class FillWorstFitScheduler(Scheduler):
                     )
                 )
 
-                # update knowledge about this site
+                # Update the site's free resource count
                 free_resources -= next_task.cpus
-                self.central_queue.site_stats[index_site] = (free_resources, site_name, site_id, is_leased_instance, expiration_ts)
-                self.central_queue.site_stats_changed = True
+                self.central_queue.set_site_free_resources(site_index, free_resources)
 
+                # This task has been scheduled, so move to the next one
                 scheduled_tasks.add(next_task)
-
                 next_task = next(runnable_tasks, None)
 
             self.central_queue.ready_tasks -= scheduled_tasks
